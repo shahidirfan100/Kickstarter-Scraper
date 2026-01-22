@@ -1,108 +1,23 @@
-// Kickstarter Projects Scraper - HYBRID: Playwright (listing) + Got-Scraping (details)
+// Kickstarter Projects Scraper - Fixed extraction + proper deduplication
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 import { Actor, log } from 'apify';
-import { gotScraping } from 'got-scraping';
-import * as cheerio from 'cheerio';
 
 await Actor.init();
 
-// Random delay utility
 const randomDelay = (min = 500, max = 2000) =>
     new Promise(r => setTimeout(r, min + Math.random() * (max - min)));
 
-// Parse funding data from detail page using got-scraping (FAST & CHEAP)
-async function fetchProjectDetails(projectUrl) {
+// Normalize URL for deduplication (strip query params)
+const normalizeUrl = (url) => {
+    if (!url) return null;
     try {
-        const response = await gotScraping({
-            url: projectUrl,
-            headers: {
-                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'accept-language': 'en-US,en;q=0.9',
-                'sec-ch-ua': '"Chromium";v="122", "Google Chrome";v="122"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"Windows"',
-                'sec-fetch-dest': 'document',
-                'sec-fetch-mode': 'navigate',
-            },
-            timeout: { request: 30000 },
-            retry: { limit: 2 },
-        });
-
-        const $ = cheerio.load(response.body);
-
-        // Try JSON-LD first (most reliable)
-        let pledged = null, backers = null, funding_goal = null, days_left = null, percentage_funded = null;
-
-        $('script[type="application/ld+json"]').each((_, el) => {
-            try {
-                const json = JSON.parse($(el).text());
-                if (json['@type'] === 'Product' || json['@type'] === 'CreativeWork') {
-                    // Extract from structured data if available
-                }
-            } catch { }
-        });
-
-        // Extract from page content - look for stats
-        const pageText = $('body').text();
-
-        // Pledged amount (e.g., "$12,345 pledged" or "€5,000 pledged")
-        const pledgedMatch = pageText.match(/([€£$][\d,]+)\s*pledged/i) ||
-            pageText.match(/pledged\s*of\s*([€£$][\d,]+)/i);
-        if (pledgedMatch) {
-            pledged = pledgedMatch[1].replace(/[€£$,]/g, '');
-        }
-
-        // Funding goal (e.g., "of $10,000 goal")
-        const goalMatch = pageText.match(/of\s*([€£$][\d,]+)\s*goal/i) ||
-            pageText.match(/goal:\s*([€£$][\d,]+)/i);
-        if (goalMatch) {
-            funding_goal = goalMatch[1].replace(/[€£$,]/g, '');
-        }
-
-        // Backers count
-        const backersMatch = pageText.match(/([\d,]+)\s*backers?/i);
-        if (backersMatch) {
-            backers = backersMatch[1].replace(/,/g, '');
-        }
-
-        // Days left
-        const daysMatch = pageText.match(/(\d+)\s*days?\s*(?:to go|left)/i);
-        if (daysMatch) {
-            days_left = daysMatch[1];
-        }
-
-        // Percentage funded
-        const percentMatch = pageText.match(/(\d+)%\s*funded/i);
-        if (percentMatch) {
-            percentage_funded = percentMatch[1];
-        }
-
-        // Try extracting from specific elements
-        const statsText = $('.project-stats, .NS_projects__progress_statistics, [class*="stats"]').text();
-        if (statsText) {
-            if (!pledged) {
-                const m = statsText.match(/([€£$][\d,]+)/);
-                if (m) pledged = m[1].replace(/[€£$,]/g, '');
-            }
-            if (!backers) {
-                const m = statsText.match(/([\d,]+)\s*backers?/i);
-                if (m) backers = m[1].replace(/,/g, '');
-            }
-        }
-
-        // Try meta tags
-        const ogDescription = $('meta[property="og:description"]').attr('content') || '';
-        if (!pledged && ogDescription) {
-            const m = ogDescription.match(/([€£$][\d,]+)\s*pledged/i);
-            if (m) pledged = m[1].replace(/[€£$,]/g, '');
-        }
-
-        return { pledged, backers, funding_goal, days_left, percentage_funded };
-    } catch (err) {
-        log.debug(`Detail fetch failed for ${projectUrl}: ${err.message}`);
-        return { pledged: null, backers: null, funding_goal: null, days_left: null, percentage_funded: null };
+        const u = new URL(url);
+        // Keep only the path, remove query params like ?ref=
+        return `${u.origin}${u.pathname}`;
+    } catch {
+        return url.split('?')[0];
     }
-}
+};
 
 async function main() {
     try {
@@ -113,7 +28,6 @@ async function main() {
             sort = 'magic',
             results_wanted: RESULTS_WANTED_RAW = 20,
             max_pages: MAX_PAGES_RAW = 5,
-            collectDetails = true, // Default true for complete data
             proxyConfiguration: proxyConfig,
         } = input;
 
@@ -139,8 +53,7 @@ async function main() {
         };
 
         const finalUrl = buildUrl();
-        log.info(`Starting Kickstarter scraper with URL: ${finalUrl}`);
-        log.info(`Target: ${RESULTS_WANTED} projects, Max pages: ${MAX_PAGES}, Details: ${collectDetails}`);
+        log.info(`Starting Kickstarter scraper - Target: ${RESULTS_WANTED} projects`);
 
         const crawler = new PlaywrightCrawler({
             proxyConfiguration,
@@ -167,21 +80,19 @@ async function main() {
 
             preNavigationHooks: [
                 async ({ page }) => {
-                    // Resource blocking for faster loads
                     await page.route('**/*', (route) => {
                         const type = route.request().resourceType();
                         const url = route.request().url();
-                        if (['image', 'font', 'media'].includes(type) ||
+                        // Keep images for getting image URLs
+                        if (['font', 'media'].includes(type) ||
                             url.includes('google-analytics') ||
                             url.includes('googletagmanager') ||
-                            url.includes('facebook') ||
-                            url.includes('doubleclick')) {
+                            url.includes('facebook')) {
                             return route.abort();
                         }
                         return route.continue();
                     });
 
-                    // Stealth
                     await page.addInitScript(() => {
                         Object.defineProperty(navigator, 'webdriver', { get: () => false });
                         Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
@@ -196,7 +107,7 @@ async function main() {
                 await page.waitForLoadState('domcontentloaded');
                 await page.waitForLoadState('networkidle').catch(() => { });
 
-                log.info('Page loaded, starting extraction...');
+                log.info('Page loaded, extracting projects...');
 
                 // Handle cookies
                 try {
@@ -207,81 +118,135 @@ async function main() {
                     }
                 } catch { }
 
-                // SCROLL-BASED PAGINATION - Load all projects by scrolling
+                // Initial scroll to load content
+                await page.evaluate(() => window.scrollTo(0, 500));
+                await randomDelay(1500, 2500);
+
                 let previousHeight = 0;
                 let scrollAttempts = 0;
                 const maxScrollAttempts = MAX_PAGES * 3;
 
                 while (saved < RESULTS_WANTED && scrollAttempts < maxScrollAttempts) {
-                    // Extract visible projects
+                    // Extract projects with FIXED regex patterns
                     const projects = await page.evaluate(() => {
                         const cards = Array.from(document.querySelectorAll('.js-react-proj-card'));
+
                         return cards.map(card => {
                             try {
+                                // Title and URL
                                 const titleLink = card.querySelector('.project-card__title');
                                 const title = titleLink?.innerText?.trim() || null;
                                 const href = titleLink?.getAttribute('href');
-                                const url = href ? (href.startsWith('http') ? href : `https://www.kickstarter.com${href}`) : null;
+                                // Normalize URL - remove query params for deduplication
+                                let url = href ? (href.startsWith('http') ? href : `https://www.kickstarter.com${href}`) : null;
+                                if (url) {
+                                    try {
+                                        const u = new URL(url);
+                                        url = `${u.origin}${u.pathname}`; // Strip query params
+                                    } catch { }
+                                }
 
+                                // Creator
                                 const creatorEl = card.querySelector('.project-card__creator');
                                 const creator = creatorEl?.innerText?.trim()?.replace(/^by\s+/i, '') || null;
 
+                                // Image - get actual src
                                 const img = card.querySelector('img');
-                                const image_url = img?.src || img?.getAttribute('data-src') || null;
+                                const image_url = img?.src || img?.getAttribute('data-src') ||
+                                    img?.srcset?.split(',')[0]?.trim()?.split(' ')[0] || null;
 
-                                // Parse text for basic stats
-                                const text = card.innerText || '';
-                                const percentMatch = text.match(/(\d+)%\s*funded/i);
-                                const daysMatch = text.match(/(\d+)\s*days?\s*(?:left|to go)/i);
+                                // Category from link
                                 const categoryLink = card.querySelector('a[href*="/discover/categories/"]');
+                                const category = categoryLink?.innerText?.trim() || null;
+
+                                // Get ALL text from the card for parsing
+                                const allText = card.innerText || '';
+                                const lines = allText.split('\n').map(l => l.trim()).filter(l => l);
+
+                                // FIXED PARSING - Look for specific patterns
+                                let days_left = null;
+                                let percentage_funded = null;
+                                let pledged = null;
+                                let backers = null;
+                                let funding_goal = null;
+
+                                // Find the line with funding info (usually contains "days" and "%")
+                                for (const line of lines) {
+                                    // Days left pattern: "28 days left" or "28 days to go"
+                                    if (!days_left) {
+                                        const daysMatch = line.match(/^(\d+)\s*days?\s*(left|to go)?$/i) ||
+                                            line.match(/(\d+)\s*days?\s*(left|to go)/i);
+                                        if (daysMatch) days_left = daysMatch[1];
+                                    }
+
+                                    // Percentage funded: "459% funded" or just "459%"
+                                    if (!percentage_funded) {
+                                        const percentMatch = line.match(/(\d+)%\s*funded/i) ||
+                                            line.match(/^(\d+)%$/);
+                                        if (percentMatch) percentage_funded = percentMatch[1];
+                                    }
+
+                                    // Backers: "1,234 backers"
+                                    if (!backers) {
+                                        const backersMatch = line.match(/([\d,]+)\s*backers?/i);
+                                        if (backersMatch) backers = backersMatch[1].replace(/,/g, '');
+                                    }
+
+                                    // Pledged amount: "$12,345 pledged" or "€5,000 pledged"
+                                    if (!pledged) {
+                                        const pledgedMatch = line.match(/([€£$][\d,]+)\s*pledged/i);
+                                        if (pledgedMatch) pledged = pledgedMatch[1].replace(/[€£$,]/g, '');
+                                    }
+
+                                    // Funding goal: "of $10,000 goal"
+                                    if (!funding_goal) {
+                                        const goalMatch = line.match(/of\s*([€£$][\d,]+)\s*goal/i);
+                                        if (goalMatch) funding_goal = goalMatch[1].replace(/[€£$,]/g, '');
+                                    }
+                                }
+
+                                // Also check the combined text for patterns
+                                if (!percentage_funded) {
+                                    const m = allText.match(/(\d+)%/);
+                                    if (m) percentage_funded = m[1];
+                                }
+                                if (!days_left) {
+                                    const m = allText.match(/(\d+)\s*days?/i);
+                                    if (m) days_left = m[1];
+                                }
 
                                 return {
                                     title,
                                     creator,
                                     url,
                                     image_url,
-                                    percentage_funded: percentMatch ? percentMatch[1] : null,
-                                    days_left: daysMatch ? daysMatch[1] : null,
-                                    category: categoryLink?.innerText?.trim() || null,
-                                    // These will be filled by detail page
-                                    pledged: null,
-                                    backers: null,
-                                    funding_goal: null,
+                                    pledged,
+                                    backers,
+                                    funding_goal,
+                                    days_left,
+                                    percentage_funded,
+                                    category,
                                     location: null,
                                 };
-                            } catch { return null; }
+                            } catch {
+                                return null;
+                            }
                         }).filter(p => p && p.title && p.url);
                     });
 
-                    // Filter duplicates
-                    const newProjects = projects.filter(p => !seenUrls.has(p.url));
-                    newProjects.forEach(p => seenUrls.add(p.url));
+                    // Filter duplicates using normalized URLs
+                    const newProjects = projects.filter(p => {
+                        const normalizedUrl = normalizeUrl(p.url);
+                        if (seenUrls.has(normalizedUrl)) return false;
+                        seenUrls.add(normalizedUrl);
+                        return true;
+                    });
 
                     if (newProjects.length > 0) {
-                        const toProcess = newProjects.slice(0, RESULTS_WANTED - saved);
-
-                        // HYBRID: Fetch details with got-scraping (FAST & CHEAP)
-                        if (collectDetails) {
-                            log.info(`Fetching details for ${toProcess.length} projects with got-scraping...`);
-
-                            // Process in batches of 5 for speed
-                            for (let i = 0; i < toProcess.length; i += 5) {
-                                const batch = toProcess.slice(i, i + 5);
-                                await Promise.all(batch.map(async (project) => {
-                                    const details = await fetchProjectDetails(project.url);
-                                    project.pledged = details.pledged || project.pledged;
-                                    project.backers = details.backers || project.backers;
-                                    project.funding_goal = details.funding_goal || project.funding_goal;
-                                    // Override if better data from detail
-                                    if (details.days_left) project.days_left = details.days_left;
-                                    if (details.percentage_funded) project.percentage_funded = details.percentage_funded;
-                                }));
-                            }
-                        }
-
-                        await Dataset.pushData(toProcess);
-                        saved += toProcess.length;
-                        log.info(`Saved ${toProcess.length} projects (total: ${saved}/${RESULTS_WANTED})`);
+                        const toSave = newProjects.slice(0, RESULTS_WANTED - saved);
+                        await Dataset.pushData(toSave);
+                        saved += toSave.length;
+                        log.info(`Saved ${toSave.length} unique projects (total: ${saved}/${RESULTS_WANTED})`);
                     }
 
                     if (saved >= RESULTS_WANTED) {
@@ -289,35 +254,38 @@ async function main() {
                         break;
                     }
 
-                    // Scroll down for more projects
+                    // Check if page height changed
                     const currentHeight = await page.evaluate(() => document.body.scrollHeight);
 
                     if (currentHeight === previousHeight) {
-                        // Try clicking "Load more" button as fallback
+                        // Try Load more button
                         try {
-                            const loadMore = page.locator('a:has-text("Load more"), button:has-text("Load more"), .bttn-primary').first();
-                            if (await loadMore.isVisible({ timeout: 2000 })) {
+                            const loadMore = page.locator('a:has-text("Load more"), button:has-text("Load more"), a.bttn.bttn-primary').first();
+                            if (await loadMore.isVisible({ timeout: 3000 })) {
+                                log.info('Clicking Load more button...');
+                                await loadMore.scrollIntoViewIfNeeded();
+                                await randomDelay(500, 1000);
                                 await loadMore.click();
-                                await randomDelay(2000, 3000);
+                                await randomDelay(3000, 4000);
                             } else {
-                                log.info('No more content to load');
+                                log.info('No more content available');
                                 break;
                             }
                         } catch {
                             log.info('Pagination complete');
                             break;
                         }
+                    } else {
+                        // Just scroll
+                        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+                        await randomDelay(2000, 3000);
                     }
 
                     previousHeight = currentHeight;
-
-                    // Scroll to bottom
-                    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-                    await randomDelay(2000, 3000);
                     scrollAttempts++;
                 }
 
-                log.info(`Finished. Total: ${saved} projects`);
+                log.info(`Finished extraction. Total: ${saved} unique projects`);
             },
 
             failedRequestHandler({ request }, error) {
