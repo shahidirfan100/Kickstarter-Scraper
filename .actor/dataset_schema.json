@@ -1,0 +1,73 @@
+{
+  "actorSpecification": 1,
+  "fields": {},
+  "views": {
+    "overview": {
+      "title": "Overview",
+      "transformation": {
+        "fields": [
+          "title",
+          "creator",
+          "url",
+          "image_url",
+          "funding_goal",
+          "pledged",
+          "backers",
+          "days_left",
+          "percentage_funded",
+          "category",
+          "location"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "title": {
+            "label": "Project Title",
+            "format": "text"
+          },
+          "creator": {
+            "label": "Creator",
+            "format": "text"
+          },
+          "url": {
+            "label": "URL",
+            "format": "text"
+          },
+          "image_url": {
+            "label": "Image",
+            "format": "text"
+          },
+          "funding_goal": {
+            "label": "Goal",
+            "format": "text"
+          },
+          "pledged": {
+            "label": "Pledged",
+            "format": "text"
+          },
+          "backers": {
+            "label": "Backers",
+            "format": "text"
+          },
+          "days_left": {
+            "label": "Days Left",
+            "format": "text"
+          },
+          "percentage_funded": {
+            "label": "% Funded",
+            "format": "text"
+          },
+          "category": {
+            "label": "Category",
+            "format": "text"
+          },
+          "location": {
+            "label": "Location",
+            "format": "text"
+          }
+        }
+      }
+    }
+  }
+}

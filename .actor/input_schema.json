@@ -1,0 +1,72 @@
+{
+  "title": "Kickstarter Projects Scraper",
+  "description": "Scrape project data from Kickstarter. Provide a Kickstarter discover URL or use category/sort filters.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "startUrl": {
+      "title": "Start URL",
+      "type": "string",
+      "description": "Start scraping from a specific Kickstarter URL (e.g., https://www.kickstarter.com/discover/advanced?category_id=16&sort=magic).",
+      "editor": "textfield",
+      "prefill": "https://www.kickstarter.com/discover"
+    },
+    "category": {
+      "title": "Category",
+      "type": "string",
+      "description": "Filter by Kickstarter category (Art, Comics, Design, Fashion, Film, Food, Games, Music, Photography, Publishing, Tech, Theater). Leave empty for all categories.",
+      "editor": "textfield"
+    },
+    "sort": {
+      "title": "Sort By",
+      "type": "string",
+      "description": "Sort order: magic (recommended), popularity, newest, end_date, most_funded.",
+      "editor": "select",
+      "enum": [
+        "magic",
+        "popularity",
+        "newest",
+        "end_date",
+        "most_funded"
+      ],
+      "default": "magic"
+    },
+    "collectDetails": {
+      "title": "Collect project details",
+      "type": "boolean",
+      "description": "If enabled, scraper opens project detail pages for full information (slower but more complete data).",
+      "editor": "checkbox",
+      "default": false
+    },
+    "results_wanted": {
+      "title": "Maximum number of projects",
+      "type": "integer",
+      "description": "The maximum number of projects to collect.",
+      "minimum": 1,
+      "default": 20,
+      "editor": "number"
+    },
+    "max_pages": {
+      "title": "Maximum number of pages",
+      "type": "integer",
+      "description": "A safety cap on the number of 'Load More' clicks to perform.",
+      "minimum": 1,
+      "editor": "number",
+      "default": 5
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Use Apify Proxy to avoid blocking (residential recommended for Kickstarter).",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
+      }
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
