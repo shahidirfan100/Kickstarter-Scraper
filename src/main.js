@@ -1,4 +1,4 @@
-// Kickstarter Projects Scraper - Playwright Chrome with Maximum Stealth
+// Kickstarter Projects Scraper - Playwright Chrome with Maximum Stealth + Correct Selectors
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 import { Actor, log } from 'apify';
 
@@ -32,6 +32,7 @@ async function main() {
 
         let saved = 0;
         let loadMoreClicks = 0;
+        const seenUrls = new Set();
 
         // Build URL with filters if provided
         const buildUrl = () => {
@@ -57,11 +58,11 @@ async function main() {
             sessionPoolOptions: {
                 maxPoolSize: 5,
                 sessionOptions: {
-                    maxUsageCount: 3, // Rotate sessions frequently
+                    maxUsageCount: 3,
                 },
             },
 
-            maxConcurrency: 2, // Lower concurrency for stealth
+            maxConcurrency: 2,
             requestHandlerTimeoutSecs: 120,
             navigationTimeoutSecs: 60,
 
@@ -70,7 +71,7 @@ async function main() {
                 useFingerprints: true,
                 fingerprintOptions: {
                     fingerprintGeneratorOptions: {
-                        browsers: ['chrome'], // Chrome for best compatibility
+                        browsers: ['chrome'],
                         operatingSystems: ['windows', 'macos'],
                         devices: ['desktop'],
                     },
@@ -85,7 +86,7 @@ async function main() {
                         const type = route.request().resourceType();
                         const url = route.request().url();
 
-                        // Block images, fonts, media, and trackers (keeps stylesheets for rendering)
+                        // Block images, fonts, media, and trackers
                         if (['image', 'font', 'media'].includes(type) ||
                             url.includes('google-analytics') ||
                             url.includes('googletagmanager') ||
@@ -101,25 +102,12 @@ async function main() {
                         return route.continue();
                     });
 
-                    // ADVANCED STEALTH SCRIPTS - Hide all automation traces
+                    // ADVANCED STEALTH SCRIPTS
                     await page.addInitScript(() => {
-                        // Hide webdriver property
                         Object.defineProperty(navigator, 'webdriver', { get: () => false });
-
-                        // Mock plugins to avoid headless detection
-                        Object.defineProperty(navigator, 'plugins', {
-                            get: () => [1, 2, 3, 4, 5],
-                        });
-
-                        // Mock languages
-                        Object.defineProperty(navigator, 'languages', {
-                            get: () => ['en-US', 'en'],
-                        });
-
-                        // Add chrome runtime
+                        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
                         window.chrome = { runtime: {} };
-
-                        // Override permissions query to avoid detection
                         const originalQuery = window.navigator.permissions.query;
                         window.navigator.permissions.query = (parameters) => (
                             parameters.name === 'notifications' ?
@@ -128,7 +116,6 @@ async function main() {
                         );
                     });
 
-                    // Human-like initial delay
                     await randomDelay(1000, 3000);
                 },
             ],
@@ -137,40 +124,34 @@ async function main() {
                 const label = request.userData?.label || 'DISCOVER';
 
                 if (label === 'DISCOVER') {
-                    // Wait for page to fully load
                     await page.waitForLoadState('domcontentloaded');
                     await page.waitForLoadState('networkidle').catch(() => { });
 
                     log.info('Page loaded, waiting for projects...');
 
-                    // Handle cookie consent if present
+                    // Handle cookie consent
                     try {
-                        const cookieButton = page.locator('button:has-text("Accept all cookies"), button:has-text("OK")').first();
+                        const cookieButton = page.locator('button:has-text("Accept all cookies"), button:has-text("Accept"), button:has-text("OK")').first();
                         if (await cookieButton.isVisible({ timeout: 3000 })) {
                             await cookieButton.click();
                             await randomDelay(1000, 2000);
                             log.info('Accepted cookies');
                         }
-                    } catch (e) {
-                        // No cookie banner
-                    }
+                    } catch (e) { }
 
-                    // Human-like scrolling pattern
+                    // Scroll to trigger lazy loading
                     await page.evaluate(async () => {
                         const scrollStep = 300 + Math.random() * 200;
-                        const delay = 100 + Math.random() * 150;
-
-                        for (let y = 0; y < Math.min(500, document.body.scrollHeight); y += scrollStep) {
+                        for (let y = 0; y < Math.min(800, document.body.scrollHeight); y += scrollStep) {
                             window.scrollTo(0, y);
-                            await new Promise(r => setTimeout(r, delay));
+                            await new Promise(r => setTimeout(r, 100 + Math.random() * 100));
                         }
                     });
+                    await randomDelay(1500, 2500);
 
-                    await randomDelay(1000, 2000);
-
-                    // Extract projects in a loop with "Load more" clicking
+                    // Extract projects in a loop with pagination
                     while (saved < RESULTS_WANTED && loadMoreClicks < MAX_PAGES) {
-                        // Retry loop for data availability
+                        // Wait for project cards to load - using CORRECT selector: .js-react-proj-card
                         let retries = 0;
                         const maxRetries = 10;
                         let projects = [];
@@ -179,63 +160,66 @@ async function main() {
                             await page.waitForTimeout(1000);
                             retries++;
 
-                            // Extract all visible projects
+                            // Extract projects using CORRECT Kickstarter selectors
                             projects = await page.evaluate(() => {
-                                const cards = Array.from(document.querySelectorAll('[data-test-id="project-card"]'));
+                                // CORRECT SELECTOR: .js-react-proj-card is the project card container
+                                const cards = Array.from(document.querySelectorAll('.js-react-proj-card'));
 
                                 return cards.map(card => {
                                     try {
-                                        // Extract title and URL
-                                        const titleLink = card.querySelector('a[href*="/projects/"]');
-                                        const title = titleLink?.textContent?.trim() || null;
+                                        // Title and URL from .project-card__title
+                                        const titleLink = card.querySelector('.project-card__title');
+                                        const title = titleLink?.innerText?.trim() || null;
                                         const relativeUrl = titleLink?.getAttribute('href');
-                                        const url = relativeUrl ? `https://www.kickstarter.com${relativeUrl}` : null;
+                                        const url = relativeUrl ?
+                                            (relativeUrl.startsWith('http') ? relativeUrl : `https://www.kickstarter.com${relativeUrl}`)
+                                            : null;
 
-                                        // Extract creator
-                                        const creatorLink = card.querySelector('a[href*="/profile/"]');
-                                        const creator = creatorLink?.textContent?.trim() || null;
+                                        // Creator from .project-card__creator
+                                        const creatorEl = card.querySelector('.project-card__creator');
+                                        const creator = creatorEl?.innerText?.trim()?.replace(/^by\s+/i, '') || null;
 
-                                        // Extract image (note: images blocked, but URL is still in DOM)
-                                        const img = card.querySelector('img');
+                                        // Image from .project-card__media img
+                                        const img = card.querySelector('.project-card__media img, img');
                                         const image_url = img?.src || img?.getAttribute('data-src') || img?.getAttribute('srcset')?.split(',')[0]?.trim()?.split(' ')[0] || null;
 
-                                        // Extract funding info from text
-                                        const fundingText = card.textContent || '';
+                                        // Data-pid for deduplication
+                                        const dataPid = card.getAttribute('data-pid');
 
-                                        // Parse pledged amount
-                                        const pledgedMatch = fundingText.match(/pledged/i);
-                                        let pledged = null;
-                                        if (pledgedMatch) {
-                                            const amountMatch = fundingText.match(/\\$([\\d,]+)/);
-                                            pledged = amountMatch ? amountMatch[1].replace(/,/g, '') : null;
-                                        }
+                                        // Extract funding info from all paragraphs and text content
+                                        const allText = card.innerText || '';
 
-                                        // Parse percentage funded
-                                        const percentMatch = fundingText.match(/(\\d+)%/);
+                                        // Parse percentage funded (e.g., "459% funded")
+                                        const percentMatch = allText.match(/(\d+)%\s*funded/i);
                                         const percentage_funded = percentMatch ? percentMatch[1] : null;
 
-                                        // Parse backers
-                                        const backersMatch = fundingText.match(/(\\d+)\\s+backers/i);
-                                        const backers = backersMatch ? backersMatch[1] : null;
-
-                                        // Parse days left
-                                        const daysMatch = fundingText.match(/(\\d+)\\s+days?\\s+(?:to go|left)/i);
+                                        // Parse days left (e.g., "28 days left")
+                                        const daysMatch = allText.match(/(\d+)\s*days?\s*(?:left|to go)/i);
                                         const days_left = daysMatch ? daysMatch[1] : null;
 
-                                        // Extract category from link or text
-                                        const categoryLink = card.querySelector('a[href*="/discover/categories/"]');
-                                        const category = categoryLink?.textContent?.trim() || null;
+                                        // Parse pledged amount (e.g., "$12,345")
+                                        const pledgedMatch = allText.match(/\$([0-9,]+)/);
+                                        const pledged = pledgedMatch ? pledgedMatch[1].replace(/,/g, '') : null;
 
-                                        // Extract location if available
-                                        const locationText = card.querySelector('[class*="location"]');
-                                        const location = locationText?.textContent?.trim() || null;
+                                        // Parse backers count
+                                        const backersMatch = allText.match(/(\d+)\s*backers?/i);
+                                        const backers = backersMatch ? backersMatch[1] : null;
+
+                                        // Category from link or text
+                                        const categoryLink = card.querySelector('a[href*="/discover/categories/"]');
+                                        const category = categoryLink?.innerText?.trim() || null;
+
+                                        // Location (if available)
+                                        const locationMatch = card.querySelector('[class*="location"]');
+                                        const location = locationMatch?.innerText?.trim() || null;
 
                                         return {
                                             title,
                                             creator,
                                             url,
                                             image_url,
-                                            funding_goal: null, // Not always visible on cards
+                                            data_pid: dataPid,
+                                            funding_goal: null,
                                             pledged,
                                             backers,
                                             days_left,
@@ -248,30 +232,46 @@ async function main() {
                                     }
                                 }).filter(p => p && p.title && p.url);
                             });
+
+                            if (projects.length > 0) {
+                                log.info(`Found ${projects.length} project cards with .js-react-proj-card selector`);
+                            }
                         }
 
                         if (projects.length === 0) {
                             log.warning(`No projects found after ${maxRetries} attempts`);
+
+                            // Debug: Save page HTML to key-value store
+                            const html = await page.content();
+                            await Actor.setValue('debug-page', html, { contentType: 'text/html' });
+                            log.info('Saved debug HTML to key-value store');
                             break;
                         }
 
-                        // Filter and limit to remaining needed
-                        const remaining = RESULTS_WANTED - saved;
-                        const newProjects = projects.slice(0, remaining);
+                        // Filter out duplicates and limit to remaining needed
+                        const newProjects = projects.filter(p => {
+                            const key = p.url || p.data_pid;
+                            if (seenUrls.has(key)) return false;
+                            seenUrls.add(key);
+                            return true;
+                        });
 
-                        if (newProjects.length > 0) {
-                            await Dataset.pushData(newProjects);
-                            saved += newProjects.length;
-                            log.info(`Extracted ${newProjects.length} projects (total: ${saved}/${RESULTS_WANTED})`);
+                        const toSave = newProjects.slice(0, RESULTS_WANTED - saved);
+
+                        if (toSave.length > 0) {
+                            // Remove data_pid from output
+                            const cleanProjects = toSave.map(({ data_pid, ...rest }) => rest);
+                            await Dataset.pushData(cleanProjects);
+                            saved += cleanProjects.length;
+                            log.info(`Saved ${cleanProjects.length} new projects (total: ${saved}/${RESULTS_WANTED})`);
                         }
 
-                        // Check if we have enough
                         if (saved >= RESULTS_WANTED) {
                             log.info('✅ Reached target number of results');
                             break;
                         }
 
-                        // Try to click "Load more" button
+                        // Pagination: Click "Load more" button
                         loadMoreClicks++;
                         if (loadMoreClicks >= MAX_PAGES) {
                             log.info('Reached maximum page limit');
@@ -279,60 +279,43 @@ async function main() {
                         }
 
                         try {
-                            // Look for "Load more" button
                             const loadMoreButton = page.locator('a.bttn-primary, button:has-text("Load more"), a:has-text("Load more")').first();
 
-                            if (await loadMoreButton.isVisible({ timeout: 3000 })) {
+                            if (await loadMoreButton.isVisible({ timeout: 5000 })) {
                                 log.info(`Clicking "Load more" (click ${loadMoreClicks}/${MAX_PAGES})`);
 
-                                // Human-like mouse movement before clicking
-                                await page.mouse.move(
-                                    100 + Math.random() * 300,
-                                    100 + Math.random() * 300
-                                );
-
-                                // Scroll to button with human-like behavior
+                                await page.mouse.move(100 + Math.random() * 300, 100 + Math.random() * 300);
                                 await loadMoreButton.scrollIntoViewIfNeeded();
                                 await randomDelay(500, 1500);
-
-                                // Click and wait for new content
                                 await loadMoreButton.click();
-                                await randomDelay(3000, 5000); // 3-5 seconds
+                                await randomDelay(3000, 5000);
 
-                                // Human-like scroll down to trigger lazy loading
+                                // Scroll to load new content
                                 await page.evaluate(async () => {
                                     const scrollStep = 300 + Math.random() * 200;
-                                    const delay = 100 + Math.random() * 150;
-
                                     for (let y = window.scrollY; y < document.body.scrollHeight; y += scrollStep) {
                                         window.scrollTo(0, y);
-                                        await new Promise(r => setTimeout(r, delay));
+                                        await new Promise(r => setTimeout(r, 100));
                                     }
                                 });
-
                                 await randomDelay(1000, 2000);
                             } else {
-                                log.info('No "Load more" button found, pagination complete');
+                                log.info('No "Load more" button found');
                                 break;
                             }
                         } catch (e) {
-                            log.info('Could not find or click "Load more" button, ending pagination');
+                            log.info('Pagination ended');
                             break;
                         }
                     }
 
                     log.info(`Finished scraping. Total projects collected: ${saved}`);
                 }
-
-                if (label === 'DETAIL' && collectDetails) {
-                    // TODO: Implement detail page scraping if needed
-                    log.info(`Detail scraping not yet implemented for: ${request.url}`);
-                }
             },
 
             failedRequestHandler({ request }, error) {
                 if (error.message?.includes('403')) {
-                    log.warning(`⚠️ Blocked (403): ${request.url} - Cloudflare may have detected automation`);
+                    log.warning(`⚠️ Blocked (403): ${request.url}`);
                 } else {
                     log.error(`Request failed: ${request.url} - ${error.message}`);
                 }
@@ -340,7 +323,6 @@ async function main() {
         });
 
         await crawler.run([{ url: finalUrl, userData: { label: 'DISCOVER' } }]);
-
         log.info(`✅ Scraping complete! Saved ${saved} Kickstarter projects`);
 
     } finally {
