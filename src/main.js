@@ -1,4 +1,4 @@
-import { CheerioCrawler, Dataset } from 'crawlee';
+import { PlaywrightCrawler, Dataset } from 'crawlee';
 import { Actor, log } from 'apify';
 
 await Actor.init();
@@ -17,13 +17,6 @@ const normalizeUrl = (url) => {
     }
 };
 
-const makeAbsoluteUrl = (href) => {
-    if (!href) return null;
-    if (href.startsWith('http://') || href.startsWith('https://')) return href;
-    if (href.startsWith('//')) return `https:${href}`;
-    return `https://www.kickstarter.com${href}`;
-};
-
 const buildBaseUrl = ({ startUrl, category, sort }) => {
     if (startUrl && startUrl !== DEFAULT_START_URL) return startUrl;
     const url = new URL('https://www.kickstarter.com/discover/advanced');
@@ -38,98 +31,12 @@ const buildPageUrl = (baseUrl, page) => {
     return url.toString();
 };
 
-const parseNumberFromText = (text, regex) => {
-    const match = text.match(regex);
-    return match ? match[1].replace(/,/g, '') : null;
-};
-
-const extractProject = ($card) => {
-    const titleLink = $card.find('.project-card__title').first();
-    const title = titleLink.text().trim() || null;
-    const href = titleLink.attr('href');
-    const url = makeAbsoluteUrl(href);
-
-    const creatorEl = $card.find('.project-card__creator').first();
-    const creator = creatorEl.text().trim().replace(/^by\s+/i, '') || null;
-
-    const img = $card.find('img').first();
-    let imageUrl = img.attr('src') || img.attr('data-src') || null;
-    const srcset = img.attr('srcset');
-    if (!imageUrl && srcset) {
-        imageUrl = srcset.split(',')[0].trim().split(' ')[0];
-    }
-
-    const categoryLink = $card.find('a[href*="/discover/categories/"]').first();
-    const category = categoryLink.text().trim() || null;
-
-    const locationEl = $card.find('.project-card__location, [data-test-id="project-location"]').first();
-    const location = locationEl.text().trim() || null;
-
-    const allText = $card.text() || '';
-    const lines = allText.split('\n').map((line) => line.trim()).filter(Boolean);
-
-    let daysLeft = null;
-    let percentageFunded = null;
-    let pledged = null;
-    let backers = null;
-    let fundingGoal = null;
-
-    for (const line of lines) {
-        if (!daysLeft) {
-            const daysMatch = line.match(/^(\d+)\s*days?\s*(left|to go)?$/i)
-                || line.match(/(\d+)\s*days?\s*(left|to go)/i);
-            if (daysMatch) daysLeft = daysMatch[1];
-        }
-
-        if (!percentageFunded) {
-            const percentMatch = line.match(/(\d+)%\s*funded/i)
-                || line.match(/^(\d+)%$/);
-            if (percentMatch) percentageFunded = percentMatch[1];
-        }
-
-        if (!backers) {
-            backers = parseNumberFromText(line, /([\d,]+)\s*backers?/i);
-        }
-
-        if (!pledged) {
-            const pledgedMatch = line.match(/([€£$][\d,]+)\s*pledged/i);
-            if (pledgedMatch) pledged = pledgedMatch[1].replace(/[€£$,]/g, '');
-        }
-
-        if (!fundingGoal) {
-            const goalMatch = line.match(/of\s*([€£$][\d,]+)\s*goal/i);
-            if (goalMatch) fundingGoal = goalMatch[1].replace(/[€£$,]/g, '');
-        }
-    }
-
-    if (!percentageFunded) {
-        const match = allText.match(/(\d+)%/);
-        if (match) percentageFunded = match[1];
-    }
-    if (!daysLeft) {
-        const match = allText.match(/(\d+)\s*days?/i);
-        if (match) daysLeft = match[1];
-    }
-
-    return {
-        title,
-        creator,
-        url,
-        image_url: imageUrl,
-        pledged,
-        backers,
-        funding_goal: fundingGoal,
-        days_left: daysLeft,
-        percentage_funded: percentageFunded,
-        category,
-        location,
-    };
-};
-
 const parsePositiveInt = (value, fallback) => {
     const numberValue = Number.parseInt(value, 10);
     return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : fallback;
 };
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function main() {
     try {
@@ -168,34 +75,155 @@ async function main() {
 
         log.info(`Starting Kickstarter scraper - Target: ${resultsWanted} projects`);
 
-        const crawler = new CheerioCrawler({
+        const crawler = new PlaywrightCrawler({
             requestQueue,
             proxyConfiguration,
-            maxRequestRetries: 3,
-            maxConcurrency: 5,
+            maxRequestRetries: 5,
+            maxConcurrency: 2,
             minConcurrency: 1,
-            maxRequestsPerMinute: 30,
-            requestHandlerTimeoutSecs: 120,
-            async requestHandler({ request, $, response }) {
-                const page = request.userData.page || 1;
+            requestHandlerTimeoutSecs: 180,
+            navigationTimeoutSecs: 60,
+            useSessionPool: true,
+            sessionPoolOptions: {
+                maxPoolSize: 6,
+                sessionOptions: { maxUsageCount: 5 },
+            },
+            preNavigationHooks: [
+                async ({ page }) => {
+                    await page.route('**/*', (route) => {
+                        const type = route.request().resourceType();
+                        const url = route.request().url();
+                        if (['font', 'media'].includes(type)
+                            || url.includes('google-analytics')
+                            || url.includes('googletagmanager')
+                            || url.includes('facebook')) {
+                            return route.abort();
+                        }
+                        return route.continue();
+                    });
 
-                if (!response || response.statusCode >= 400) {
-                    log.warning(`Request failed: ${request.url} (status ${response?.statusCode || 'n/a'})`);
+                    await page.addInitScript(() => {
+                        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                        window.chrome = { runtime: {} };
+                    });
+
+                    await page.setExtraHTTPHeaders({
+                        'accept-language': 'en-US,en;q=0.9',
+                    });
+                },
+            ],
+            async requestHandler({ request, page, response }) {
+                const pageNumber = request.userData.page || 1;
+
+                if (response && response.status && response.status() === 403) {
+                    throw new Error('Request blocked - received 403 status code.');
+                }
+
+                if (response && response.status && response.status() >= 400) {
+                    log.warning(`Request failed: ${request.url} (status ${response.status()})`);
                     return;
                 }
 
-                const cards = $('.js-react-proj-card');
+                await page.waitForLoadState('domcontentloaded');
+                await page.waitForSelector('.js-react-proj-card', { timeout: 15000 }).catch(() => {});
+
+                const cards = await page.$$('.js-react-proj-card');
                 if (!cards.length) {
-                    log.warning(`No project cards found on page ${page}`);
+                    log.warning(`No project cards found on page ${pageNumber}`);
                     return;
                 }
 
-                const projects = [];
-                cards.each((_, el) => {
-                    const project = extractProject($(el));
-                    if (project && project.title && project.url) {
-                        projects.push(project);
-                    }
+                const projects = await page.evaluate(() => {
+                    const cards = Array.from(document.querySelectorAll('.js-react-proj-card'));
+                    return cards.map((card) => {
+                        try {
+                            const titleLink = card.querySelector('.project-card__title');
+                            const title = titleLink?.textContent?.trim() || null;
+                            const href = titleLink?.getAttribute('href');
+                            const url = href
+                                ? (href.startsWith('http') ? href : `https://www.kickstarter.com${href}`)
+                                : null;
+
+                            const creatorEl = card.querySelector('.project-card__creator');
+                            const creator = creatorEl?.textContent?.trim()?.replace(/^by\s+/i, '') || null;
+
+                            const img = card.querySelector('img');
+                            const imageUrl = img?.getAttribute('src')
+                                || img?.getAttribute('data-src')
+                                || img?.getAttribute('srcset')?.split(',')[0]?.trim()?.split(' ')[0]
+                                || null;
+
+                            const categoryLink = card.querySelector('a[href*="/discover/categories/"]');
+                            const category = categoryLink?.textContent?.trim() || null;
+
+                            const locationEl = card.querySelector('.project-card__location, [data-test-id="project-location"]');
+                            const location = locationEl?.textContent?.trim() || null;
+
+                            const allText = card.textContent || '';
+                            const lines = allText.split('\n').map((line) => line.trim()).filter(Boolean);
+
+                            let daysLeft = null;
+                            let percentageFunded = null;
+                            let pledged = null;
+                            let backers = null;
+                            let fundingGoal = null;
+
+                            for (const line of lines) {
+                                if (!daysLeft) {
+                                    const daysMatch = line.match(/^(\d+)\s*days?\s*(left|to go)?$/i)
+                                        || line.match(/(\d+)\s*days?\s*(left|to go)/i);
+                                    if (daysMatch) daysLeft = daysMatch[1];
+                                }
+
+                                if (!percentageFunded) {
+                                    const percentMatch = line.match(/(\d+)%\s*funded/i)
+                                        || line.match(/^(\d+)%$/);
+                                    if (percentMatch) percentageFunded = percentMatch[1];
+                                }
+
+                                if (!backers) {
+                                    const backersMatch = line.match(/([\d,]+)\s*backers?/i);
+                                    if (backersMatch) backers = backersMatch[1].replace(/,/g, '');
+                                }
+
+                                if (!pledged) {
+                                    const pledgedMatch = line.match(/([€£$][\d,]+)\s*pledged/i);
+                                    if (pledgedMatch) pledged = pledgedMatch[1].replace(/[€£$,]/g, '');
+                                }
+
+                                if (!fundingGoal) {
+                                    const goalMatch = line.match(/of\s*([€£$][\d,]+)\s*goal/i);
+                                    if (goalMatch) fundingGoal = goalMatch[1].replace(/[€£$,]/g, '');
+                                }
+                            }
+
+                            if (!percentageFunded) {
+                                const match = allText.match(/(\d+)%/);
+                                if (match) percentageFunded = match[1];
+                            }
+                            if (!daysLeft) {
+                                const match = allText.match(/(\d+)\s*days?/i);
+                                if (match) daysLeft = match[1];
+                            }
+
+                            return {
+                                title,
+                                creator,
+                                url,
+                                image_url: imageUrl,
+                                pledged,
+                                backers,
+                                funding_goal: fundingGoal,
+                                days_left: daysLeft,
+                                percentage_funded: percentageFunded,
+                                category,
+                                location,
+                            };
+                        } catch {
+                            return null;
+                        }
+                    }).filter((project) => project && project.title && project.url);
                 });
 
                 const newProjects = projects.filter((project) => {
@@ -217,7 +245,7 @@ async function main() {
                     return;
                 }
 
-                if (page >= maxPages) {
+                if (pageNumber >= maxPages) {
                     log.info(`Reached max pages limit (${maxPages}).`);
                     return;
                 }
@@ -227,7 +255,8 @@ async function main() {
                     return;
                 }
 
-                const nextPage = page + 1;
+                await sleep(1000 + Math.random() * 2000);
+                const nextPage = pageNumber + 1;
                 const nextUrl = buildPageUrl(request.userData.baseUrl, nextPage);
                 await requestQueue.addRequest({
                     url: nextUrl,
