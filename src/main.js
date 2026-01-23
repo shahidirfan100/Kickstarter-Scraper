@@ -73,15 +73,15 @@ async function main() {
         const crawler = new PlaywrightCrawler({
             requestQueue,
             proxyConfiguration,
-            maxRequestRetries: 3,
+            maxRequestRetries: 2,
             maxConcurrency: 1,
             minConcurrency: 1,
-            requestHandlerTimeoutSecs: 180,
-            navigationTimeoutSecs: 60,
+            requestHandlerTimeoutSecs: 120,
+            navigationTimeoutSecs: 45,
             useSessionPool: true,
             sessionPoolOptions: {
                 maxPoolSize: 8,
-                sessionOptions: { maxUsageCount: 3 },
+                sessionOptions: { maxUsageCount: 2 },
             },
             browserPoolOptions: {
                 useFingerprints: true,
@@ -94,7 +94,11 @@ async function main() {
                 },
             },
             preNavigationHooks: [
-                async ({ page }) => {
+                async ({ page }, gotoOptions) => {
+                    if (gotoOptions) {
+                        gotoOptions.waitUntil = 'domcontentloaded';
+                        gotoOptions.timeout = 45000;
+                    }
                     await page.route('**/*', (route) => {
                         const type = route.request().resourceType();
                         const url = route.request().url();
@@ -131,8 +135,7 @@ async function main() {
                     return;
                 }
 
-                await page.waitForLoadState('domcontentloaded');
-                await page.waitForSelector('.js-react-proj-card', { timeout: 15000 }).catch(() => {});
+                await page.waitForSelector('.js-react-proj-card', { timeout: 10000 }).catch(() => {});
 
                 const cards = await page.$$('.js-react-proj-card');
                 if (!cards.length) {
@@ -144,13 +147,29 @@ async function main() {
                     const cards = Array.from(document.querySelectorAll('.js-react-proj-card'));
                     return cards.map((card) => {
                         try {
-                            const dataProjectRaw = card.getAttribute('data-project');
+                            const dataProjectRaw = card.getAttribute('data-project')
+                                || card.querySelector('[data-project]')?.getAttribute('data-project')
+                                || card.closest('[data-project]')?.getAttribute('data-project');
                             let dataProject = null;
                             if (dataProjectRaw) {
                                 try {
                                     dataProject = JSON.parse(dataProjectRaw);
                                 } catch {
                                     dataProject = null;
+                                }
+                            }
+
+                            const projectId = card.getAttribute('data-project-id')
+                                || card.dataset?.projectId
+                                || card.querySelector('[data-project-id]')?.getAttribute('data-project-id')
+                                || null;
+
+                            const apolloState = window.__APOLLO_STATE__ || window.__APOLLO_STATE || null;
+                            if (!dataProject && apolloState && projectId) {
+                                const apolloProject = apolloState[`Project:${projectId}`]
+                                    || apolloState[`project:${projectId}`];
+                                if (apolloProject) {
+                                    dataProject = apolloProject;
                                 }
                             }
 
@@ -276,7 +295,7 @@ async function main() {
                     return;
                 }
 
-                await sleep(1000 + Math.random() * 2000);
+                await sleep(400 + Math.random() * 900);
                 const nextPage = pageNumber + 1;
                 const nextUrl = buildPageUrl(request.userData.baseUrl, nextPage);
                 await requestQueue.addRequest({
