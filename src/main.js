@@ -78,22 +78,32 @@ async function main() {
         const crawler = new PlaywrightCrawler({
             requestQueue,
             proxyConfiguration,
-            maxRequestRetries: 5,
-            maxConcurrency: 2,
+            maxRequestRetries: 3,
+            maxConcurrency: 1,
             minConcurrency: 1,
             requestHandlerTimeoutSecs: 180,
             navigationTimeoutSecs: 60,
             useSessionPool: true,
             sessionPoolOptions: {
-                maxPoolSize: 6,
-                sessionOptions: { maxUsageCount: 5 },
+                maxPoolSize: 8,
+                sessionOptions: { maxUsageCount: 3 },
+            },
+            browserPoolOptions: {
+                useFingerprints: true,
+                fingerprintOptions: {
+                    fingerprintGeneratorOptions: {
+                        browsers: ['chrome'],
+                        operatingSystems: ['windows', 'macos'],
+                        devices: ['desktop'],
+                    },
+                },
             },
             preNavigationHooks: [
                 async ({ page }) => {
                     await page.route('**/*', (route) => {
                         const type = route.request().resourceType();
                         const url = route.request().url();
-                        if (['font', 'media'].includes(type)
+                        if (['image', 'stylesheet', 'font', 'media'].includes(type)
                             || url.includes('google-analytics')
                             || url.includes('googletagmanager')
                             || url.includes('facebook')) {
@@ -113,10 +123,11 @@ async function main() {
                     });
                 },
             ],
-            async requestHandler({ request, page, response }) {
+            async requestHandler({ request, page, response, session }) {
                 const pageNumber = request.userData.page || 1;
 
                 if (response && response.status && response.status() === 403) {
+                    session?.markBad();
                     throw new Error('Request blocked - received 403 status code.');
                 }
 
@@ -138,6 +149,16 @@ async function main() {
                     const cards = Array.from(document.querySelectorAll('.js-react-proj-card'));
                     return cards.map((card) => {
                         try {
+                            const dataProjectRaw = card.getAttribute('data-project');
+                            let dataProject = null;
+                            if (dataProjectRaw) {
+                                try {
+                                    dataProject = JSON.parse(dataProjectRaw);
+                                } catch {
+                                    dataProject = null;
+                                }
+                            }
+
                             const titleLink = card.querySelector('.project-card__title');
                             const title = titleLink?.textContent?.trim() || null;
                             const href = titleLink?.getAttribute('href');
@@ -158,16 +179,21 @@ async function main() {
                             const category = categoryLink?.textContent?.trim() || null;
 
                             const locationEl = card.querySelector('.project-card__location, [data-test-id="project-location"]');
-                            const location = locationEl?.textContent?.trim() || null;
+                            const location = locationEl?.textContent?.trim()
+                                || dataProject?.location?.displayable_name
+                                || dataProject?.location?.short_name
+                                || null;
 
                             const allText = card.textContent || '';
                             const lines = allText.split('\n').map((line) => line.trim()).filter(Boolean);
 
-                            let daysLeft = null;
-                            let percentageFunded = null;
-                            let pledged = null;
-                            let backers = null;
-                            let fundingGoal = null;
+                            let daysLeft = dataProject?.deadline
+                                ? String(Math.max(0, Math.ceil((dataProject.deadline * 1000 - Date.now()) / 86400000)))
+                                : null;
+                            let percentageFunded = dataProject?.percent_funded ? String(dataProject.percent_funded) : null;
+                            let pledged = dataProject?.pledged ? String(dataProject.pledged) : null;
+                            let backers = dataProject?.backers_count ? String(dataProject.backers_count) : null;
+                            let fundingGoal = dataProject?.goal ? String(dataProject.goal) : null;
 
                             for (const line of lines) {
                                 if (!daysLeft) {
