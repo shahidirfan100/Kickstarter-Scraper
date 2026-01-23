@@ -2,6 +2,9 @@
   "actorSpecification": 1,
   "name": "kickstarter-projects-scraper",
   "version": "1.0.0",
+  "meta": {
+    "generatedBy": "GPT-5"
+  },
   "buildTag": "latest",
   "dockerfile": "../Dockerfile",
   "readme": "../README.md",
