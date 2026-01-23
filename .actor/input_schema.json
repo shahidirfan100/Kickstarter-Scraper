@@ -31,19 +31,13 @@
       ],
       "default": "magic"
     },
-    "collectDetails": {
-      "title": "Collect project details",
-      "type": "boolean",
-      "description": "If enabled, scraper opens project detail pages for full information (slower but more complete data).",
-      "editor": "checkbox",
-      "default": false
-    },
     "results_wanted": {
       "title": "Maximum number of projects",
       "type": "integer",
       "description": "The maximum number of projects to collect.",
       "minimum": 1,
       "default": 20,
+      "prefill": 20,
       "editor": "number"
     },
     "max_pages": {
@@ -52,7 +46,8 @@
       "description": "A safety cap on the number of 'Load More' clicks to perform.",
       "minimum": 1,
       "editor": "number",
-      "default": 5
+      "default": 5,
+      "prefill": 5
     },
     "proxyConfiguration": {
       "title": "Proxy configuration",

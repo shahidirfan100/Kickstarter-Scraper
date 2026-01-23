@@ -48,12 +48,7 @@ async function main() {
             results_wanted: resultsWantedRaw = 20,
             max_pages: maxPagesRaw = 5,
             proxyConfiguration: proxyConfig,
-            collectDetails = false,
         } = input;
-
-        if (collectDetails) {
-            log.warningOnce('collectDetails is enabled, but detail-page scraping is not implemented.');
-        }
 
         const resultsWanted = parsePositiveInt(resultsWantedRaw, 20);
         const maxPages = parsePositiveInt(maxPagesRaw, 5);
